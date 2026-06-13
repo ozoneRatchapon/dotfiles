@@ -1,0 +1,5 @@
+[registry]
+sparse-registry = true
+
+[net]
+retry = 3
