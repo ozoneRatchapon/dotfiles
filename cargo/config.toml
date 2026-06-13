@@ -3,3 +3,9 @@ sparse-registry = true
 
 [net]
 retry = 3
+
+# Shared target directory — all workspaces build to one location
+# Prevents duplicate dependency builds across projects
+# Periodic cleanup: cargo clean --all in any project, or rm -rf ~/.cargo/target
+[build]
+target-dir = "/Users/ozone/.cargo/target"
