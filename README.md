@@ -48,3 +48,19 @@ cd ~/dotfiles
 - Each tool sourced exactly once across all shell config files
 - `/etc/paths.d/` cleaned to only: `homebrew`, `100-rvictl`
 - No `~/.profile` (empty) or `~/.zlogin` (not needed)
+
+## Shell Environment for AI Agents
+
+If you're an AI agent (or human) working on this machine, use these tools **directly**:
+
+| Use this | Not this | Why |
+|----------|----------|-----|
+| `rg "pattern"` | `grep -rn "pattern" .` | rg is recursive by default, no -r/-n flags needed |
+| `eza --icons --git` | `ls -la` | eza shows git status + icons |
+| `bat file.rs` | `cat file.rs` | bat adds syntax highlighting |
+| `fd "\.rs$"` | `find . -name "*.rs"` | fd has simpler glob syntax |
+| `dust` | `du -sh *` | dust is visual + faster |
+| `procs` | `ps aux` | procs is cleaner output |
+| `btm` | `top` | bottom is interactive + better |
+
+**Why it matters:** `grep`, `find`, `ls` etc. are aliased to their Rust replacements. But the flags are incompatible — e.g. `grep -r` means recursive, but `rg -r` means replace. Using the native tool directly avoids silent breakage.
