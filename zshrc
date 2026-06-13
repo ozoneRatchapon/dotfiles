@@ -59,3 +59,54 @@ dns-status() {
   echo "Active resolver:"
   scutil --dns | grep -A3 "nameserver\[0\]" | head -4
 }
+
+
+# --- BATTERY STATUS (sleep-leak detector) ---
+# Use: battery-status → charge, health, cycle count, power source, and which
+#                        apps are preventing the Mac from deep-sleeping.
+# Uses ioreg (fast) + pmset. `command grep` avoids the grep→rg alias trap.
+battery-status() {
+  local batt source pct state ioreg cycles max design health
+  local leaks holders suspects
+
+  # charge + power source (pmset)
+  batt="$(pmset -g batt)"
+  source="$(printf '%s' "$batt" | awk -F"'" '/drawing from/{print $2; exit}')"
+  source="${source:-unknown}"
+  pct="$(printf '%s' "$batt" | awk -F'\t' '/InternalBattery/{split($2,a,";"); gsub(/[^0-9]/,"",a[1]); print a[1]; exit}')"
+  state="$(printf '%s' "$batt" | awk -F'\t' '/InternalBattery/{split($2,a,";"); gsub(/^ +| +$/,"",a[2]); print a[2]; exit}')"
+
+  # battery details (ioreg — ~10ms; anchor to start-of-line to skip the BatteryData blob)
+  ioreg="$(ioreg -rn AppleSmartBattery)"
+  cycles="$(printf '%s' "$ioreg" | awk -F'= ' '/^[[:space:]]*"CycleCount"/{print $2; exit}')"
+  max="$(printf '%s'    "$ioreg" | awk -F'= ' '/^[[:space:]]*"MaxCapacity"/{print $2; exit}')"
+  design="$(printf '%s' "$ioreg" | awk -F'= ' '/^[[:space:]]*"DesignCapacity"/{print $2; exit}')"
+  if [ -n "$max" ] && [ -n "$design" ]; then
+    if [ "$max" -le 100 ] 2>/dev/null; then
+      health="${max}%"
+    else
+      health="$(( max * 100 / design ))%"
+    fi
+  else
+    health="?"
+  fi
+
+  # sleep-leak detector (the LINE.AudioService bug lives here)
+  leaks="$(pmset -g assertions 2>/dev/null | command grep -c 'PreventUserIdleSystemSleep')"
+  holders="$(pmset -g assertions 2>/dev/null \
+    | command grep -oE 'pid [0-9]+\([^)]+\)' \
+    | sed -E 's/pid [0-9]+\((.*)\)/\1/' | sort -u)"
+  # system services allowed to hold assertions
+  suspects="$(printf '%s\n' "$holders" \
+    | command grep -ivE '^(powerd|WindowServer|coreaudiod|launchd|sharingd|kernel_task|bluetoothd|mds)$' \
+    | paste -sd, -)"
+
+  echo "Battery   ${pct:-?}%  · health ${health}  · ${cycles:-?} cycles"
+  echo "Power     ${source}  · ${state:-—}"
+  if [ -n "$suspects" ]; then
+    echo "Sleep     ⚠ ${leaks} idle-sleep assertions — ${suspects} is blocking deep sleep"
+    echo "          → quit/restart the culprit to restore sleep"
+  else
+    echo "Sleep     OK (${leaks} normal idle-sleep assertions)"
+  fi
+}
