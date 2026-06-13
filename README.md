@@ -43,6 +43,36 @@ cd ~/dotfiles
 | delta | git diff | `brew install git-delta` |
 | fnm | nvm | `brew install fnm` |
 
+## Custom Shell Helpers
+
+Defined in `zshrc` — project-specific helpers (distinct from the tool replacements below).
+
+| Helper | Use |
+|--------|-----|
+| `dns-auto` | Reset Wi-Fi DNS to network-provided (fixes captive portals on public WiFi) |
+| `dns-cloudflare` | Set Cloudflare DNS (`1.1.1.1` / `1.0.0.1`, fast + private) |
+| `dns-status` | Show current Wi-Fi DNS + active resolver |
+| `battery-status` | Charge %, health, cycle count, power source + sleep-leak detector |
+| `cargo-clean-all` | Clear the shared Rust target dir (`~/.cargo/target`) |
+| `zed-fork` | Launch the auto_prompt Zed fork |
+
+### `battery-status` — sleep-leak detector
+
+```text
+Battery   100%  · health 100%  · 3 cycles
+Power     AC Power  · finishing charge
+Sleep     ⚠ 45 idle-sleep assertions — LINE.AudioService is blocking deep sleep
+          → quit/restart the culprit to restore sleep
+```
+
+Uses `ioreg` (~10ms) for battery data and `pmset -g assertions` to flag any
+**non-system** process holding `PreventUserIdleSystemSleep` assertions (system
+services like `powerd`, `WindowServer`, `coreaudiod` are filtered out). When an
+app leaks assertions (e.g. LINE on macOS), the Mac never reaches deep sleep even
+with the display off — this names the culprit.
+
+`dns-*` and helpers using `sudo networksetup` will prompt for your password.
+
 ## Notes
 
 - Each tool sourced exactly once across all shell config files
