@@ -14,12 +14,31 @@ Personal macOS developer dotfiles — Apple Silicon (M5 Pro).
 | `gitconfig` | Git: delta pager, LFS, user |
 | `gitignore_global` | Global gitignore (DS_Store, etc.) |
 | `cargo/config.toml` | Cargo: sparse registry |
+| `Brewfile` | Reproducible tool installs (brew + cask + mas + cargo) |
 
 ## Install
 
+### Fresh machine
+
 ```bash
-git clone <repo-url> ~/dotfiles
+# 1. Clone
+git clone https://github.com/ozoneRatchapon/dotfiles.git ~/dotfiles
 cd ~/dotfiles
+
+# 2. Symlink configs (backs up any existing files)
+./bootstrap.sh
+
+# 3. Install tools from Brewfile
+#    NOTE: the cargo block compiles 26 crates from source (slow).
+#    To skip it, delete the `cargo "..."` lines first.
+brew bundle install --file ~/dotfiles/Brewfile
+```
+
+### Existing machine (config refresh)
+
+```bash
+cd ~/dotfiles
+git pull
 ./bootstrap.sh
 ```
 
@@ -30,6 +49,8 @@ cd ~/dotfiles
 - **zshrc** — Interactive shells. PATH additions, tool config, aliases.
 
 ## Tool Stack
+
+The full install list is in [`Brewfile`](Brewfile). Highlights:
 
 | Tool | Replaces | Install |
 |------|----------|---------|
