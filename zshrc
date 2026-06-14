@@ -31,7 +31,7 @@ alias ps='procs'
 alias top='btm'
 
 # --- ZED FORK (auto_prompt) ---
-alias zed-fork="$HOME/Projects/zed-fork/target/release/zed"
+alias zed-fork="$HOME/.cargo/target/release/zed"
 
 # --- BUILD CLEANUP ---
 alias cargo-clean-all='rm -rf ~/.cargo/target && echo "Cleared shared target dir (~/.cargo/target)"'
