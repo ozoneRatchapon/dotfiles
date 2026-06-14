@@ -18,6 +18,8 @@ backup() {
 link() {
     local src="$DOTFILES/$1"
     local dest="$HOME/$2"
+    # Ensure parent dir exists (e.g. ~/.local/bin, ~/Library/LaunchAgents)
+    mkdir -p "$(dirname "$dest")"
     if [ -L "$dest" ]; then
         local current
         current="$(readlink "$dest")"
@@ -42,5 +44,24 @@ link gitignore_global .gitignore_global
 link cargo/config.toml .cargo/config.toml
 
 echo ""
-echo "Done. Open a new terminal to apply."
+echo "Linking scripts..."
+link bin/mac-audit-weekly .local/bin/mac-audit-weekly
+chmod +x "$DOTFILES/bin/mac-audit-weekly"
+
+echo ""
+echo "Linking LaunchAgents..."
+link launchagents/com.ozone.mac-audit.plist Library/LaunchAgents/com.ozone.mac-audit.plist
+
+echo ""
+echo "Done. Open a new terminal to apply config changes."
+echo ""
+echo "To activate the weekly audit LaunchAgent (first time only):"
+echo "  launchctl load ~/Library/LaunchAgents/com.ozone.mac-audit.plist"
+echo ""
+echo "To trigger a manual run now:"
+echo "  launchctl start com.ozone.mac-audit"
+echo ""
+echo "To view the latest audit:"
+echo "  audit-log"
+echo ""
 echo "Backups saved with .bak.<timestamp> suffix."

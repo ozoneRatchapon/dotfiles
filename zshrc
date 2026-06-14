@@ -110,3 +110,15 @@ battery-status() {
     echo "Sleep     OK (${leaks} normal idle-sleep assertions)"
   fi
 }
+
+# --- AUDIT LOG (drift detection viewer) ---
+# Use: audit-log → show the latest mac-audit run from the weekly LaunchAgent
+audit-log() {
+  local log="$HOME/Library/Logs/mac-audit.log"
+  if [ ! -f "$log" ]; then
+    echo "No audit log yet. Run 'mac-audit-weekly' or wait for the weekly LaunchAgent."
+    return
+  fi
+  # Print from the last separator line to EOF (the most recent run)
+  awk '/════════ mac-audit/{block=""} {block=block $0 "\n"} END{printf "%s", block}' "$log"
+}

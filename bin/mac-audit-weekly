@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# mac-audit-weekly — LaunchAgent wrapper for mac-audit.sh
+#
+# LaunchAgents run with a minimal system PATH (/usr/bin:/bin:/usr/sbin:/sbin).
+# This wrapper sets up the user's PATH so the audit detects Homebrew tools,
+# fnm-managed node, and Solana CLI correctly.
+
+set -uo pipefail
+
+AUDIT_SCRIPT="/Users/ozone/mac helper/mac-audit.sh"
+
+if [ ! -x "$AUDIT_SCRIPT" ]; then
+  echo "ERROR: $AUDIT_SCRIPT not found or not executable" >&2
+  exit 0
+fi
+
+# Set up PATH matching the interactive shell (without sourcing .zshrc,
+# which has aliases that would break the audit's `command grep` calls)
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+export PATH="$HOME/.cargo/bin:$PATH"
+
+# fnm — set up node so the audit finds it
+if command -v fnm &>/dev/null; then
+  eval "$(fnm env 2>/dev/null)" 2>/dev/null || true
+fi
+
+echo ""
+echo "════════ mac-audit · $(date '+%Y-%m-%d %H:%M') ════════"
+"$AUDIT_SCRIPT"
