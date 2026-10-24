@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# memwatch — background memory recorder.
+#
+# Samples the machine every INTERVAL seconds into a compact TSV, and when
+# headroom collapses it dumps a full process snapshot. After the next OOM the
+# snapshot says exactly what ate the RAM, instead of leaving you to guess.
+#
+# Usage:
+#   memwatch                  run in the foreground
+#   memwatch --once           take one sample and exit (for testing)
+#   memwatch --report         summarise what has been recorded so far
+#
+# Env: MEMWATCH_INTERVAL (default 10), MEMWATCH_SPIKE_GB (default 6)
+
+set -uo pipefail
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")/memlib.sh"
+
+state_dir="$HOME/.local/state/memwatch"
+log="$state_dir/memwatch.tsv"
+spike_dir="$state_dir/spikes"
+interval="${MEMWATCH_INTERVAL:-10}"
+spike_mb=$(( ${MEMWATCH_SPIKE_GB:-6} * 1024 ))
+mkdir -p "$spike_dir"
+
+# ── report mode ───────────────────────────────────────────────────────────────
+if [ "${1:-}" = "--report" ]; then
+  [ -s "$log" ] || { echo "memwatch: no samples recorded yet ($log)"; exit 0; }
+  printf '\n\033[1mmemwatch · %s samples\033[0m\n' "$(( $(wc -l < "$log") - 1 ))"
+  awk -F'\t' 'NR>1 {
+    n++
+    if (min_avail == "" || $2 < min_avail) { min_avail = $2; min_at = $1 }
+    if ($4 > max_wired)      { max_wired = $4; wired_at = $1 }
+    if ($5 > max_swap)       { max_swap = $5 }
+    sum_avail += $2
+  } END {
+    if (n == 0) exit
+    printf "  mean available   %.1f GB\n", sum_avail/n/1024
+    printf "  LOWEST available %.1f GB   at %s\n", min_avail/1024, min_at
+    printf "  peak wired       %.1f GB   at %s\n", max_wired/1024, wired_at
+    printf "  peak swap        %.1f GB\n", max_swap/1024
+  }' "$log"
+  spikes=$(ls -1 "$spike_dir" 2>/dev/null | wc -l | tr -d ' ')
+  printf '\n\033[1m%s spike snapshot(s)\033[0m  %s\n' "$spikes" "$spike_dir"
+  ls -1t "$spike_dir" 2>/dev/null | head -5 | sed 's/^/  /'
+  echo
+  exit 0
+fi
+
+[ -s "$log" ] || printf 'time\tavail_mb\tactive_mb\twired_mb\tswap_mb\tcompressed_mb\ttop_family\n' > "$log"
+
+record_sample() {
+  mem_sample
+  local swap_mb ts top_family
+  swap_mb="$(mem_swap_used_mb)"
+  ts="$(date '+%Y-%m-%d %H:%M:%S')"
+  top_family="$(mem_by_family | head -1 | cut -f3)"
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$ts" "$MEM_AVAILABLE_MB" "$MEM_ACTIVE_MB" "$MEM_WIRED_MB" \
+    "$swap_mb" "$MEM_COMPRESSED_MB" "$top_family" >> "$log"
+
+  # Spike: headroom gone, or the VM has started compressing/swapping in anger.
+  if [ "$MEM_AVAILABLE_MB" -lt "$spike_mb" ] || [ "$swap_mb" -gt 2048 ]; then
+    local snap="$spike_dir/$(date '+%Y%m%d-%H%M%S').txt"
+    {
+      echo "=== memwatch spike · $ts ==="
+      echo "available   $(mem_fmt_gb "$MEM_AVAILABLE_MB")   (threshold $(mem_fmt_gb "$spike_mb"))"
+      echo "wired       $(mem_fmt_gb "$MEM_WIRED_MB")"
+      echo "compressed  $(mem_fmt_gb "$MEM_COMPRESSED_MB")"
+      echo "swap        $(mem_fmt_gb "$swap_mb")"
+      echo
+      echo "--- by family ---"
+      mem_by_family | awk -F'\t' '$1 > 100 { printf "  %8.1f GB  %3s proc  %s\n", $1/1024, $2, $3 }'
+      echo
+      echo "--- top 25 processes ---"
+      mem_top_processes 25 | awk -F'\t' '{ printf "  %8.1f GB  %6s  %s\n", $1/1024, $2, $3 }'
+    } > "$snap"
+  fi
+}
+
+rotate_log() {
+  # Keep the TSV bounded; keep the 50 most recent spike snapshots.
+  local size
+  size=$(wc -c < "$log" 2>/dev/null || echo 0)
+  if [ "$size" -gt 20000000 ]; then
+    tail -20000 "$log" > "$log.tmp" && mv "$log.tmp" "$log"
+  fi
+  ls -1t "$spike_dir" 2>/dev/null | tail -n +51 | while read -r old; do
+    rm -f "$spike_dir/$old"
+  done
+}
+
+if [ "${1:-}" = "--once" ]; then
+  record_sample; rotate_log
+  echo "memwatch: sampled -> $log"
+  exit 0
+fi
+
+echo "memwatch: sampling every ${interval}s -> $log"
+rotations=0
+while :; do
+  record_sample
+  rotations=$(( rotations + 1 ))
+  [ $(( rotations % 60 )) -eq 0 ] && rotate_log
+  sleep "$interval"
+done

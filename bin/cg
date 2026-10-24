@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# cg — memory-aware `cargo`.
+#
+# Picks --jobs from the memory actually available at launch instead of letting
+# cargo fan out to all 18 cores, and routes the whole build through memgate so
+# builds started from different projects/editors queue instead of colliding.
+#
+# Usage: exactly like cargo.
+#   cg build --release
+#   cg bench --bench my_bench
+#   cg test --workspace
+#
+# Override the computed job count with CG_JOBS=N, skip the gate with CG_GATE=0.
+
+set -uo pipefail
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")/memlib.sh"
+
+mem_sample
+
+# Budget per rustc process. Fat-LTO link steps are the expensive case: this
+# workspace sets lto="fat" + codegen-units=1 on both release and bench, and a
+# single link of a katgpt-core-linked binary can hold several GB of LLVM IR.
+subcmd="${1:-}"
+case "$subcmd" in
+  bench)            mb_per_job=4096; need_gb=12 ;;
+  build|run|test)   mb_per_job=3072; need_gb=8  ;;
+  check|clippy|doc) mb_per_job=2048; need_gb=4  ;;
+  *)                mb_per_job=3072; need_gb=6  ;;
+esac
+
+# A --release build of a bench/example target links under the fat-LTO profile
+# even when the subcommand is `build`, so charge it the bench rate.
+case " $* " in
+  *" --release "*|*" --benches "*|*" --examples "*) mb_per_job=4096; need_gb=12 ;;
+esac
+
+if [ -n "${CG_JOBS:-}" ]; then
+  jobs="$CG_JOBS"
+else
+  jobs=$(( MEM_AVAILABLE_MB / mb_per_job ))
+  # Floor of 2 keeps progress under pressure; ceiling of 12 matches the P-core
+  # count — the 6 E-cores add wall-clock but multiply peak RAM.
+  [ "$jobs" -lt 2 ]  && jobs=2
+  [ "$jobs" -gt 12 ] && jobs=12
+fi
+
+printf '\033[2mcg: available %s → --jobs %s (%s MB/job budget)\033[0m\n' \
+  "$(mem_fmt_gb "$MEM_AVAILABLE_MB")" "$jobs" "$mb_per_job" >&2
+
+# CARGO_BUILD_JOBS rather than a --jobs flag: appending a flag would land on the
+# wrong side of the `--` separator in `cargo run -- args` / `cargo test -- --nocapture`.
+export CARGO_BUILD_JOBS="$jobs"
+
+if [ "${CG_GATE:-1}" = "0" ]; then
+  exec cargo "$@"
+fi
+exec memgate --need "$need_gb" --slot cargo --max 1 -- cargo "$@"

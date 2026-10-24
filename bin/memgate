@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# memgate — admission control for memory-hungry commands.
+#
+# Wraps ANY command (cargo, ComfyUI, ffmpeg, python, an editor task) and refuses
+# to launch it until the machine can actually afford it. Also enforces a
+# cross-process slot limit, so two heavy jobs started from two different
+# terminals/editors queue instead of colliding.
+#
+# Usage:
+#   memgate --need 12 -- cargo bench
+#   memgate --need 24 --slot gpu --max 1 -- python main.py     # ComfyUI
+#   memgate --need 6 --timeout 0 -- ffmpeg -i in.mp4 out.mp4   # 0 = wait forever
+#
+# Options:
+#   --need GB      memory required before launch      (default 8)
+#   --slot NAME    semaphore name                     (default "heavy")
+#   --max N        concurrent holders of that slot    (default 2)
+#   --timeout SEC  give up waiting, 0 = forever       (default 1800)
+#   --dry-run      report the decision, run nothing
+
+set -uo pipefail
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")/memlib.sh"
+
+need_gb=8; slot="heavy"; max_slots=2; timeout=1800; dry_run=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --need)    need_gb="$2"; shift 2 ;;
+    --slot)    slot="$2";    shift 2 ;;
+    --max)     max_slots="$2"; shift 2 ;;
+    --timeout) timeout="$2"; shift 2 ;;
+    --dry-run) dry_run=1;    shift ;;
+    --)        shift; break ;;
+    *) echo "memgate: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+[ $# -eq 0 ] && { echo "memgate: no command given (did you forget '--'?)" >&2; exit 2; }
+
+need_mb=$(( need_gb * 1024 ))
+slot_dir="$HOME/.local/state/memwatch/slots/$slot"
+mkdir -p "$slot_dir"
+
+# Reap slots whose owner died without releasing (crash, OOM kill, Ctrl-C).
+reap_stale_slots() {
+  local d pid
+  for d in "$slot_dir"/*; do
+    [ -d "$d" ] || continue
+    pid="$(cat "$d/pid" 2>/dev/null)"
+    # No pid file, or the owner is gone -> the slot is a leak. Take it back.
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+      rm -rf "$d"
+    fi
+  done
+}
+
+# mkdir is atomic on APFS, which makes it a usable semaphore primitive.
+# macOS has no flock(1), so this is the portable route.
+acquire_slot() {
+  local i d
+  for i in $(seq 1 "$max_slots"); do
+    d="$slot_dir/$i"
+    if mkdir "$d" 2>/dev/null; then
+      echo $$ > "$d/pid"
+      echo "$d"
+      return 0
+    fi
+  done
+  return 1
+}
+
+held=""
+release_slot() { [ -n "$held" ] && rm -rf "$held"; }
+trap 'release_slot' EXIT INT TERM
+
+waited=0
+while :; do
+  reap_stale_slots
+  mem_sample
+
+  held="$(acquire_slot)" || held=""
+  if [ -n "$held" ] && [ "$MEM_AVAILABLE_MB" -ge "$need_mb" ]; then
+    break
+  fi
+  # Holding a slot while short on memory would deadlock other waiters.
+  release_slot; held=""
+
+  if [ "$timeout" -ne 0 ] && [ "$waited" -ge "$timeout" ]; then
+    echo "memgate: timed out after ${waited}s (available $(mem_fmt_gb "$MEM_AVAILABLE_MB"), need ${need_gb} GB)" >&2
+    exit 75   # EX_TEMPFAIL
+  fi
+
+  printf '\r\033[2mmemgate: waiting — available %s / need %s GB, slot %s\033[0m  ' \
+    "$(mem_fmt_gb "$MEM_AVAILABLE_MB")" "$need_gb" "$slot" >&2
+  sleep 10
+  waited=$(( waited + 10 ))
+done
+[ "$waited" -gt 0 ] && printf '\r\033[K' >&2
+
+if [ "$dry_run" -eq 1 ]; then
+  echo "memgate: would run (available $(mem_fmt_gb "$MEM_AVAILABLE_MB"), slot $held): $*"
+  exit 0
+fi
+
+"$@"

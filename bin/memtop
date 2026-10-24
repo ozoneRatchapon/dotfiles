@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# memtop — "who is eating my RAM, right now", grouped by app family.
+#
+# Usage: memtop [-n N]     N = how many individual processes to list (default 8)
+
+set -uo pipefail
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")/memlib.sh"
+
+top_n=8
+while getopts "n:" opt; do
+  case "$opt" in
+    n) top_n="$OPTARG" ;;
+    *) echo "usage: memtop [-n N]" >&2; exit 2 ;;
+  esac
+done
+
+mem_sample
+swap_mb="$(mem_swap_used_mb)"
+
+printf '\n\033[1mMemory · %s\033[0m\n' "$(date '+%H:%M:%S')"
+printf '  total      %s\n' "$(mem_fmt_gb "$MEM_TOTAL_MB")"
+printf '  available  %s   \033[2m(free+inactive+purgeable — reclaimable)\033[0m\n' "$(mem_fmt_gb "$MEM_AVAILABLE_MB")"
+printf '  wired      %s   \033[2m(pinned; GPU/ComfyUI — cannot be reclaimed)\033[0m\n' "$(mem_fmt_gb "$MEM_WIRED_MB")"
+printf '  compressed %s   \033[2m(>0 means pressure has started)\033[0m\n' "$(mem_fmt_gb "$MEM_COMPRESSED_MB")"
+printf '  swap used  %s\n' "$(mem_fmt_gb "$swap_mb")"
+
+# Headroom verdict — the number that decides whether to start a heavy job.
+if   [ "$MEM_AVAILABLE_MB" -lt 4096 ];  then verdict=$'\033[31mCRITICAL — do not start anything heavy\033[0m'
+elif [ "$MEM_AVAILABLE_MB" -lt 10240 ]; then verdict=$'\033[33mTIGHT — one small job at most\033[0m'
+else                                         verdict=$'\033[32mOK\033[0m'
+fi
+printf '  verdict    %b\n\n' "$verdict"
+
+printf '\033[1mBy family\033[0m\n'
+mem_by_family | while IFS=$'\t' read -r mb count fam; do
+  [ "$mb" -lt 100 ] && continue
+  printf '  %8s  %3s proc  %s\n' "$(mem_fmt_gb "$mb")" "$count" "$fam"
+done
+
+printf '\n\033[1mLargest processes\033[0m\n'
+mem_top_processes "$top_n" | while IFS=$'\t' read -r mb pid cmd; do
+  printf '  %8s  %6s  %s\n' "$(mem_fmt_gb "$mb")" "$pid" "$(basename "$cmd")"
+done
+echo

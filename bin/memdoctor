@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# memdoctor — one-shot audit of everything on this Mac that can cause an OOM.
+#
+# Read-only. Reports findings and the exact command to fix each one; changes
+# nothing on its own.
+
+set -uo pipefail
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")/memlib.sh"
+
+pass=0; warn=0; crit=0
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; pass=$((pass+1)); }
+note() { printf '  \033[33m!\033[0m %s\n    \033[2m→ %s\033[0m\n' "$1" "$2"; warn=$((warn+1)); }
+bad()  { printf '  \033[31m✗\033[0m %s\n    \033[2m→ %s\033[0m\n' "$1" "$2"; crit=$((crit+1)); }
+
+mem_sample
+printf '\n\033[1mmemdoctor · %s · %s total\033[0m\n\n' "$(date '+%Y-%m-%d %H:%M')" "$(mem_fmt_gb "$MEM_TOTAL_MB")"
+
+# ── 1. GPU wired memory ───────────────────────────────────────────────────────
+# Apple Silicon has unified memory: ComfyUI/MLX allocate from the SAME pool as
+# everything else, and GPU allocations are WIRED — not compressible, not pageable.
+printf '\033[1mUnified memory / GPU\033[0m\n'
+gpu_limit="$(sysctl -n iogpu.wired_limit_mb 2>/dev/null || echo 0)"
+default_cap=$(( MEM_TOTAL_MB * 75 / 100 ))
+if [ "$gpu_limit" = "0" ]; then
+  note "GPU wired limit is unset — the GPU may wire up to ~$(mem_fmt_gb "$default_cap") of $(mem_fmt_gb "$MEM_TOTAL_MB")" \
+       "cap it so a video job cannot starve the rest: sudo sysctl iogpu.wired_limit_mb=$(( MEM_TOTAL_MB * 60 / 100 ))"
+else
+  ok "GPU wired limit capped at $(mem_fmt_gb "$gpu_limit")"
+fi
+if [ "$MEM_WIRED_MB" -gt $(( MEM_TOTAL_MB / 2 )) ]; then
+  bad "wired memory is $(mem_fmt_gb "$MEM_WIRED_MB") — over half of RAM is pinned and unreclaimable" \
+      "a GPU/ML job is holding it; finish or kill it before starting anything else"
+else
+  ok "wired memory $(mem_fmt_gb "$MEM_WIRED_MB") (healthy)"
+fi
+
+# ── 2. cargo ──────────────────────────────────────────────────────────────────
+printf '\n\033[1mRust builds\033[0m\n'
+ncpu="$(sysctl -n hw.ncpu)"
+if rg -q '^\s*jobs\s*=' "$HOME/.cargo/config.toml" 2>/dev/null; then
+  ok "cargo jobs capped in ~/.cargo/config.toml"
+elif [ -n "${CARGO_BUILD_JOBS:-}" ]; then
+  ok "CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS set in the environment"
+else
+  note "cargo jobs uncapped — a plain \`cargo build\` fans out to $ncpu rustc processes" \
+       "use \`cg\` instead of \`cargo\`, or set CARGO_BUILD_JOBS=8"
+fi
+
+# ── 3. ollama ─────────────────────────────────────────────────────────────────
+printf '\n\033[1mLocal LLM services\033[0m\n'
+if pgrep -q ollama 2>/dev/null; then
+  loaded="$(ollama ps 2>/dev/null | awk 'NR > 1 && NF' | wc -l | tr -d ' ')"
+  if [ "${loaded:-0}" -gt 0 ]; then
+    note "ollama has $loaded model(s) resident" \
+         "free them now: ollama stop --all 2>/dev/null || ollama ps"
+  else
+    ok "ollama running, no model resident"
+  fi
+  if [ -z "${OLLAMA_KEEP_ALIVE:-}" ]; then
+    note "OLLAMA_KEEP_ALIVE unset — models linger 5 min after each call" \
+         "export OLLAMA_KEEP_ALIVE=60 and OLLAMA_MAX_LOADED_MODELS=1"
+  fi
+else
+  ok "ollama not running"
+fi
+
+# ── 4. editors / language servers ─────────────────────────────────────────────
+printf '\n\033[1mEditors & language servers\033[0m\n'
+ra_count="$(/bin/ps -Ao comm= | rg -c 'rust-analyzer$' || true)"
+ra_count="${ra_count:-0}"
+ra_mb="$(mem_by_family | awk -F'\t' '$3 == "rust-analyzer" { print $1 }')"
+if [ "${ra_count:-0}" -ge 3 ]; then
+  bad "$ra_count rust-analyzer instances running, $(mem_fmt_gb "${ra_mb:-0}") total" \
+      "close editor windows you are not using; each indexes the whole workspace separately"
+elif [ "${ra_count:-0}" -ge 1 ]; then
+  ok "$ra_count rust-analyzer instance(s), $(mem_fmt_gb "${ra_mb:-0}")"
+else
+  ok "no rust-analyzer running"
+fi
+if rg -q '"command": "clippy"' "$HOME/.config/zed/settings.json" 2>/dev/null; then
+  note "rust-analyzer check command is clippy — costs notably more RAM than cargo check" \
+       "in ~/.config/zed/settings.json set check.command to \"check\" while memory is tight"
+fi
+
+# ── 5. current pressure ───────────────────────────────────────────────────────
+printf '\n\033[1mPressure right now\033[0m\n'
+swap_mb="$(mem_swap_used_mb)"
+if   [ "$MEM_AVAILABLE_MB" -lt 4096 ];  then bad  "available $(mem_fmt_gb "$MEM_AVAILABLE_MB") — critical" "run memtop and close the top family"
+elif [ "$MEM_AVAILABLE_MB" -lt 10240 ]; then note "available $(mem_fmt_gb "$MEM_AVAILABLE_MB") — tight" "gate new heavy work through memgate"
+else ok "available $(mem_fmt_gb "$MEM_AVAILABLE_MB")"; fi
+[ "$swap_mb" -gt 2048 ] && bad "swap in use: $(mem_fmt_gb "$swap_mb")" "the machine is already paging; stop a job" || ok "swap $(mem_fmt_gb "$swap_mb")"
+
+# ── 6. recorder ───────────────────────────────────────────────────────────────
+printf '\n\033[1mRecording\033[0m\n'
+if pgrep -qf 'bin/memwatch' 2>/dev/null; then
+  ok "memwatch is recording ($(wc -l < "$HOME/.local/state/memwatch/memwatch.tsv" 2>/dev/null || echo 0) samples)"
+else
+  note "memwatch is not running — the next OOM will leave no evidence" \
+       "launchctl load ~/Library/LaunchAgents/com.ozone.memwatch.plist"
+fi
+
+# ── 7. disk ───────────────────────────────────────────────────────────────────
+printf '\n\033[1mDisk (not RAM, but it bites)\033[0m\n'
+if [ -d "$HOME/.cargo/target" ]; then
+  tgt_gb="$(du -sg "$HOME/.cargo/target" 2>/dev/null | cut -f1)"
+  if [ "${tgt_gb:-0}" -gt 100 ]; then
+    note "shared cargo target dir is ${tgt_gb} GB" "reclaim with: cargo-clean-all"
+  else
+    ok "cargo target dir ${tgt_gb} GB"
+  fi
+fi
+
+printf '\n\033[1mSummary\033[0m  \033[32m%s ok\033[0m · \033[33m%s advisory\033[0m · \033[31m%s critical\033[0m\n\n' "$pass" "$warn" "$crit"
