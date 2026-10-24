@@ -9,3 +9,18 @@ retry = 3
 # Periodic cleanup: cargo clean --all in any project, or rm -rf ~/.cargo/target
 [build]
 target-dir = "/Users/ozone/.cargo/target"
+# sccache caches compiled crates keyed on the rustc arguments, which include
+# the target triple AND the absolute target-dir path. So it hits only when the
+# same crate is rebuilt for the same triple in the SAME target dir (after a
+# clean, a profile flip, or another project on the shared dir). A per-session
+# CARGO_TARGET_DIR or a worktree target always misses. Measured 2026-09-29
+# (event-checkin .issues/168): same path 135/135 Rust hits, cold check 16.3 s
+# -> 9.5 s; different path 0/135. Lifetime rate 1.3% with the 10 GiB cache full.
+# Added 2026-09-19; backup at ~/.cargo/config.toml.bak-20260919.
+# Remove this line (and `incremental = false` below) to go back.
+rustc-wrapper = "/Users/ozone/.cargo/bin/sccache"
+# sccache cannot cache incremental compilation, and cargo would otherwise send
+# every dev build through it uncached ("Non-cacheable reasons: incremental").
+# A `[env] CARGO_INCREMENTAL` entry does NOT do this — [env] reaches the
+# processes cargo spawns, not cargo's own decision to pass -C incremental.
+incremental = false

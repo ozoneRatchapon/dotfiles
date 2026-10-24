@@ -3,3 +3,5 @@
 
 # Composer (still installed)
 export PATH="$PATH:$HOME/.composer/vendor/bin"
+
+export PATH="/Users/ozone/.local/share/solana/install/active_release/bin:$PATH"

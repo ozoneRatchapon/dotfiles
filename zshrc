@@ -31,6 +31,8 @@ alias ps='procs'
 alias top='btm'
 
 # --- ZED FORK (auto_prompt) ---
+export ZED_AUTO_PROMPT_LOG=1
+export ZED_AUTO_PROMPT_LOG_DIR="$HOME/.local/share/zed_auto_prompt_log"
 alias zed-fork="$HOME/.cargo/target/release/zed"
 
 # --- BUILD CLEANUP ---
@@ -122,3 +124,25 @@ audit-log() {
   # Print from the last separator line to EOF (the most recent run)
   awk '/════════ mac-audit/{block=""} {block=block $0 "\n"} END{printf "%s", block}' "$log"
 }
+
+# Added by Antigravity IDE
+export PATH="/Users/ozone/.antigravity-ide/antigravity-ide/bin:$PATH"
+
+# >>> grok installer >>>
+export PATH="$HOME/.grok/bin:$PATH"
+fpath=(~/.grok/completions/zsh $fpath)
+autoload -Uz compinit && compinit -C
+# <<< grok installer <<<
+
+# pnpm
+export PNPM_HOME="/Users/ozone/Library/pnpm"
+case ":$PATH:" in
+  *":$PNPM_HOME/bin:"*) ;;
+  *) export PATH="$PNPM_HOME/bin:$PATH" ;;
+esac
+# pnpm end
+# machine-local settings that must not be committed (secrets, private paths)
+[ -f ~/.zshrc.local ] && source ~/.zshrc.local
+
+# kilo
+export PATH=/Users/ozone/.kilo/bin:$PATH
